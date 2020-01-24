@@ -16,18 +16,17 @@ var notify *notificator.Notificator
 
 
 type ClientManager struct {
-	clients    map[*Client]bool
-	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
+	clients    []*Client
+	messages   chan []byte
+    listener   *net.UDPConn
 }
 
 type Client struct {
-	socket net.Conn
+    addr *net.UDPAddr
 	data   chan []byte
 }
 func postNotification(notify *notificator.Notificator, title string, textContent string) error {
-    err := notify.Push(title, textContent, "/message.png", notificator.UR_CRITICAL)
+    err := notify.Push(title, textContent, "/home/user/icon.png", notificator.UR_CRITICAL)
 
     if err != nil {
         fmt.Println("Error", err)
@@ -37,48 +36,41 @@ func postNotification(notify *notificator.Notificator, title string, textContent
 }
 
 func (manager *ClientManager) start(notify *notificator.Notificator) {
+    defer manager.listener.Close()
+    go manager.receive(notify)
 	for {
 		select {
-		case connection := <-manager.register:
-			manager.clients[connection] = true
-            err := postNotification(notify,"Server",  "A new connection")
-			fmt.Println("Added new connection!")
-            if err != nil {
-                fmt.Println(err)
-                return
-            }
-		case connection := <-manager.unregister:
-			if _, ok := manager.clients[connection]; ok {
-				close(connection.data)
-				delete(manager.clients, connection)
-				fmt.Println("A connection has terminated!")
-			}
-		case message := <-manager.broadcast:
-			for connection := range manager.clients {
-				select {
-				case connection.data <- message:
-				default:
-					close(connection.data)
-					delete(manager.clients, connection)
-				}
-			}
-		}
-	}
+		case msg := <-manager.messages:
+            fmt.Println("we are about to call sendToAll")
+            manager.sendToAll(msg)
+        }
+    }
 }
 
-func (manager *ClientManager) receive(client *Client, notify *notificator.Notificator) {
+func (manager *ClientManager) receive(notify *notificator.Notificator) {
 	for {
 		message := make([]byte, 4096)
-		length, err := client.socket.Read(message)
+        n, addr, err :=  manager.listener.ReadFromUDP(message)
 		if err != nil {
-			manager.unregister <- client
-			client.socket.Close()
-			break
+            fmt.Println(err)
+            return 
 		}
-		if length > 0 {
-
+        hasClient := false
+        for _, client := range manager.clients {
+            if client.addr.String() == addr.String() {
+                hasClient = true
+            }
+        }
+        if !hasClient {
+            client := &Client{
+                addr: addr,
+            }
+            manager.clients = append(manager.clients, client)
+        }
+		if n > 0 {
+            manager.messages <- message
+            fmt.Println(string(message), n)
             b := bytes.Trim(message, "\x00")
-            fmt.Printf("%x", b)
             textContent := string(b)
             err := postNotification(notify,"Server",  textContent)
 
@@ -86,58 +78,48 @@ func (manager *ClientManager) receive(client *Client, notify *notificator.Notifi
                 fmt.Println("Error", err)
                 return
             }
-			manager.broadcast <- message
 		}
-	}
+    }
 }
 
-func (manager *ClientManager) send(client *Client) {
-	defer client.socket.Close()
-	for {
-		select {
-		case message, ok := <-client.data:
-			if !ok {
-				return
-			}
-			client.socket.Write(message)
-		}
-	}
+func (manager *ClientManager) sendToAll(message []byte) {
+    for _, client := range manager.clients {
+        fmt.Println("Sending to client: ", client.addr.String())
+        manager.listener.WriteTo([]byte("Hello, this is the server talking"), client.addr)
+    }
 }
 
 func startServerMode(notify *notificator.Notificator, addr string) {
 	fmt.Println("Starting server...")
-    listener, error := net.Listen("tcp", addr)
-	if error != nil {
-		fmt.Println(error)
+    s, err := net.ResolveUDPAddr("udp4", addr)
+    if err != nil {
+            fmt.Println(err)
+            return
+    }
+    listener, err := net.ListenUDP("udp4", s)
+	if err != nil {
+		fmt.Println(err)
+        return
 	}
 	manager := ClientManager{
-		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
+		clients:    make([]*Client, 0),
+		messages:  make(chan []byte),
+        listener: listener,
 	}
-	go manager.start(notify)
-	for {
-		connection, _ := listener.Accept()
-		if error != nil {
-			fmt.Println(error)
-		}
-		client := &Client{socket: connection, data: make(chan []byte)}
-		manager.register <- client
-		go manager.receive(client, notify)
-		go manager.send(client)
-	}
+
+	manager.start(notify)
 }
 
 //Now we shift focus to the client side
 
-func (client *Client) receive(notify *notificator.Notificator) {
+func (client *Client) receive(connection *net.UDPConn, notify *notificator.Notificator) {
 	for {
 		message := make([]byte, 4096)
-		length, err := client.socket.Read(message)
+		length, addr,  err := connection.ReadFromUDP(message)
+        fmt.Println("address", addr)
 		if err != nil {
-			client.socket.Close()
-			break
+            fmt.Println(err)
+            return
 		}
 		if length > 0 {
 			fmt.Println("RECEIVED: " + string(message))
@@ -147,13 +129,14 @@ func (client *Client) receive(notify *notificator.Notificator) {
 
 func startClientMode(notify *notificator.Notificator, addr string) {
 	fmt.Println("Starting client...")
-    connection, error := net.Dial("tcp", addr )
-	if error != nil {
-		fmt.Println(error)
+    s, err := net.ResolveUDPAddr("udp4", addr)
+    connection, err := net.DialUDP("udp4", nil, s)
+	if err != nil {
+		fmt.Println(err)
         return
 	}
-	client := &Client{socket: connection}
-	go client.receive(notify)
+	client := &Client{}
+	go client.receive(connection, notify)
 	for {
 		reader := bufio.NewReader(os.Stdin)
 		message, err := reader.ReadString('\n')
@@ -189,7 +172,7 @@ func fetchAddr() string {
 func main() {
 
     notify = notificator.New(notificator.Options{
-        DefaultIcon: "message.png",
+        DefaultIcon: "icon/default.png",
         AppName:     "My test App",
     })
 
@@ -204,3 +187,4 @@ func main() {
 	}
 
 }
+
