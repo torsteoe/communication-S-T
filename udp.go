@@ -183,7 +183,7 @@ func main() {
 	if strings.ToLower(*flagMode) == "server" {
 		startServerMode(notify, addr)
 	} else {
-		startClientMode(notify, addr)
+        startClientMode(notify, "62.16.226.210:500")
 	}
 
 }
