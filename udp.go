@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
     "bytes"
 	"bufio"
 	"flag"
@@ -155,19 +156,39 @@ func startClientMode(notify *notificator.Notificator, addr string) {
 }
 
 func fetchAddr() string {
-    cmd := "ipconfig"
-    args := []string{"getifaddr", "en0" }
-    command := exec.Command(cmd, args[0], args[1])
-    out, err := command.Output()
+    port := "12345"
+    var addr string
+	switch runtime.GOOS {
+	case "darwin":
+	    cmd := "ipconfig"
+	    args := []string{"getifaddr", "en0" }
+	    command := exec.Command(cmd, args[0], args[1])
+	    out, err := command.Output()
 
-    if err != nil {
-        fmt.Println("Error", err)
-        panic(err)
-        return ""
+	    if err != nil {
+		fmt.Println("Error", err)
+		panic(err)
+		return ""
+	    }
+	    addr = strings.TrimSpace(string(out)) + ":" + port
+    case "linux":
+	    cmd := "hostname"
+	    args := []string{"-I"}
+	    command := exec.Command(cmd, args[0])
+	    out, err := command.Output()
+
+	    if err != nil {
+		fmt.Println("Error", err)
+		panic(err)
+		return ""
+	    }
+	    response := strings.TrimSpace(string(out))
+	    respList := strings.Split(response, " ")
+	    addr = respList[0] + ":" + port
+	    
     }
 
-    port := "12345"
-    return strings.TrimSpace(string(out)) + ":" + port
+    return addr
 }
 func main() {
 
@@ -183,7 +204,7 @@ func main() {
 	if strings.ToLower(*flagMode) == "server" {
 		startServerMode(notify, addr)
 	} else {
-        startClientMode(notify, "62.16.226.210:500")
+		startClientMode(notify, "62.16.226.210:500")
 	}
 
 }
